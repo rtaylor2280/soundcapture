@@ -492,10 +492,17 @@
         extractBtn.innerHTML = 'Downloading audio...';
         
         // Extract video ID from YouTube URL (including Shorts)
-        const videoId = url.match(/(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)([^&\n?#]+)/)?.[1];
+        console.log('Processing URL:', url);
+        const videoIdMatch = url.match(/(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)([^&\n?#]+)/);
+        console.log('Video ID match result:', videoIdMatch);
+        
+        const videoId = videoIdMatch?.[1];
         if (!videoId) {
-          throw new Error('Invalid YouTube URL');
+          console.error('Failed to extract video ID from URL:', url);
+          throw new Error('Invalid YouTube URL format. Please use: youtube.com/watch?v=ID, youtube.com/shorts/ID, or youtu.be/ID');
         }
+        
+        console.log('Extracted video ID:', videoId);
         
         const response = await fetch(`https://ytapi.p.rapidapi.com/json?id=${videoId}`, {
           method: 'GET',
@@ -593,8 +600,33 @@
 
       } catch (error) {
         console.error('Processing failed:', error);
-        errorEl.textContent = 'Failed to process audio. Please try again.';
+        
+        // Show specific error messages
+        let errorMessage = 'Failed to process audio. ';
+        
+        if (error.message.includes('Invalid YouTube URL')) {
+          errorMessage = 'Invalid YouTube URL. Please check the URL and try again.';
+        } else if (error.message.includes('API Error: 4')) {
+          errorMessage = 'API limit reached or invalid API key. Please try again later.';
+        } else if (error.message.includes('No audio stream found')) {
+          errorMessage = 'No audio available for this video. It may be restricted or private.';
+        } else if (error.message.includes('Failed to download')) {
+          errorMessage = 'Failed to download audio. The video may be restricted or unavailable.';
+        } else if (error.name === 'EncodingError' || error.message.includes('decode')) {
+          errorMessage = 'Failed to decode audio file. The audio format may not be supported.';
+        } else {
+          errorMessage += error.message || 'Unknown error occurred.';
+        }
+        
+        errorEl.textContent = errorMessage;
         errorEl.classList.remove('hidden');
+        
+        // Log full error for debugging
+        console.error('Full error details:', {
+          name: error.name,
+          message: error.message,
+          stack: error.stack
+        });
       } finally {
         extractBtn.innerHTML = 'Extract Audio';
         extractBtn.disabled = false;
