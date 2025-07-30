@@ -252,7 +252,7 @@
               <input
                 id="startTime"
                 type="text"
-                placeholder="00:30"
+                placeholder="MM:SS"
                 class="input-field w-full p-3 rounded-lg text-gray-900 dark:text-white"
               />
             </div>
@@ -261,7 +261,7 @@
               <input
                 id="endTime"
                 type="text"
-                placeholder="02:15"
+                placeholder="MM:SS"
                 class="input-field w-full p-3 rounded-lg text-gray-900 dark:text-white"
               />
             </div>
@@ -491,8 +491,8 @@
         // Step 1: Get audio from RapidAPI
         extractBtn.innerHTML = 'Downloading audio...';
         
-        // Extract video ID from YouTube URL
-        const videoId = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&\n?#]+)/)?.[1];
+        // Extract video ID from YouTube URL (including Shorts)
+        const videoId = url.match(/(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)([^&\n?#]+)/)?.[1];
         if (!videoId) {
           throw new Error('Invalid YouTube URL');
         }
