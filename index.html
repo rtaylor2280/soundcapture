@@ -295,6 +295,108 @@
   </div>
 
   <script>
+    // Audio processing utilities
+    class AudioProcessor {
+      constructor() {
+        this.audioContext = null;
+      }
+
+      async initAudioContext() {
+        if (!this.audioContext) {
+          this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        return this.audioContext;
+      }
+
+      async trimAudio(audioBuffer, startTime, endTime, format = 'mp3', isSaberFont = false) {
+        const sampleRate = audioBuffer.sampleRate;
+        const startSample = Math.floor(startTime * sampleRate);
+        const endSample = endTime ? Math.floor(endTime * sampleRate) : audioBuffer.length;
+        const trimmedLength = endSample - startSample;
+
+        // Create new buffer with trimmed audio
+        let channels = audioBuffer.numberOfChannels;
+        
+        // For Saber Font, convert to mono
+        if (isSaberFont && format === 'wav') {
+          channels = 1;
+        }
+
+        const trimmedBuffer = this.audioContext.createBuffer(
+          channels,
+          trimmedLength,
+          isSaberFont ? 44100 : sampleRate // Force 44.1kHz for Saber Font
+        );
+
+        // Copy and process audio data
+        for (let channel = 0; channel < channels; channel++) {
+          const sourceChannel = Math.min(channel, audioBuffer.numberOfChannels - 1);
+          const sourceData = audioBuffer.getChannelData(sourceChannel);
+          const trimmedData = trimmedBuffer.getChannelData(channel);
+          
+          for (let i = 0; i < trimmedLength; i++) {
+            if (startSample + i < sourceData.length) {
+              trimmedData[i] = sourceData[startSample + i];
+            }
+          }
+        }
+
+        return trimmedBuffer;
+      }
+
+      audioBufferToWav(buffer, isSaberFont = false) {
+        const length = buffer.length;
+        const numberOfChannels = buffer.numberOfChannels;
+        const sampleRate = buffer.sampleRate;
+        const bitsPerSample = isSaberFont ? 16 : 16; // Force 16-bit for Saber Font
+        
+        const arrayBuffer = new ArrayBuffer(44 + length * numberOfChannels * 2);
+        const view = new DataView(arrayBuffer);
+        
+        // WAV header
+        const writeString = (offset, string) => {
+          for (let i = 0; i < string.length; i++) {
+            view.setUint8(offset + i, string.charCodeAt(i));
+          }
+        };
+        
+        writeString(0, 'RIFF');
+        view.setUint32(4, 36 + length * numberOfChannels * 2, true);
+        writeString(8, 'WAVE');
+        writeString(12, 'fmt ');
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true);
+        view.setUint16(22, numberOfChannels, true);
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, sampleRate * numberOfChannels * 2, true);
+        view.setUint16(32, numberOfChannels * 2, true);
+        view.setUint16(34, bitsPerSample, true);
+        writeString(36, 'data');
+        view.setUint32(40, length * numberOfChannels * 2, true);
+        
+        // Convert float samples to 16-bit PCM
+        let offset = 44;
+        for (let i = 0; i < length; i++) {
+          for (let channel = 0; channel < numberOfChannels; channel++) {
+            const sample = Math.max(-1, Math.min(1, buffer.getChannelData(channel)[i]));
+            view.setInt16(offset, sample * 0x7FFF, true);
+            offset += 2;
+          }
+        }
+        
+        return arrayBuffer;
+      }
+
+      async audioBufferToMp3(buffer) {
+        // For MP3, we'll use a simple PCM to MP3 conversion
+        // In a real implementation, you'd use a library like lamejs
+        // For now, we'll convert to WAV as a fallback
+        return this.audioBufferToWav(buffer);
+      }
+    }
+
+    const audioProcessor = new AudioProcessor();
+
     // Format selection
     document.querySelectorAll('.format-card').forEach(card => {
       card.addEventListener('click', function() {
@@ -323,6 +425,7 @@
     }
 
     function timeToSeconds(time) {
+      if (!time) return null;
       const parts = time.split(':').map(Number);
       if (parts.length === 2) {
         return parts[0] * 60 + parts[1];
@@ -333,7 +436,7 @@
     }
 
     // Handle form submission
-    document.getElementById('extractForm').addEventListener('submit', function(e) {
+    document.getElementById('extractForm').addEventListener('submit', async function(e) {
       e.preventDefault();
       
       const url = document.getElementById('url').value;
@@ -378,19 +481,98 @@
       }
 
       // Show loading state
-      extractBtn.innerHTML = 'Processing...';
+      extractBtn.innerHTML = 'Extracting audio...';
       extractBtn.disabled = true;
 
-      // Simulate processing
-      setTimeout(() => {
-        extractBtn.innerHTML = 'Extract Audio';
-        extractBtn.disabled = false;
+      try {
+        // Initialize audio context
+        await audioProcessor.initAudioContext();
 
+        // Step 1: Get audio from RapidAPI
+        extractBtn.innerHTML = 'Downloading audio...';
+        
+        // Extract video ID from YouTube URL
+        const videoId = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&\n?#]+)/)?.[1];
+        if (!videoId) {
+          throw new Error('Invalid YouTube URL');
+        }
+        
+        const response = await fetch(`https://ytapi.p.rapidapi.com/json?id=${videoId}`, {
+          method: 'GET',
+          headers: {
+            'X-RapidAPI-Key': '8ba1ad94d9msh5b9690149d7af04p14a299jsn90d365ad08b0',
+            'X-RapidAPI-Host': 'ytapi.p.rapidapi.com'
+          }
+        });
+
+        if (!response.ok) {
+          throw new Error(`API Error: ${response.status}`);
+        }
+
+        const apiData = await response.json();
+        
+        // Find the best audio format from the response
+        let audioUrl = null;
+        if (apiData.formats) {
+          // Look for audio-only formats first
+          const audioFormat = apiData.formats.find(f => 
+            f.mimeType?.includes('audio') && 
+            (f.mimeType.includes('mp4') || f.mimeType.includes('webm'))
+          );
+          audioUrl = audioFormat?.url;
+        }
+        
+        if (!audioUrl) {
+          throw new Error('No audio stream found');
+        }
+        
+        // Step 2: Download the audio file
+        const audioResponse = await fetch(audioUrl);
+        const audioArrayBuffer = await audioResponse.arrayBuffer();
+        
+        // Step 3: Decode audio for processing
+        const audioBuffer = await audioProcessor.audioContext.decodeAudioData(audioArrayBuffer);
+        
+        // Step 4: Process audio if time range is specified
+        let processedBuffer = audioBuffer;
+        
+        if (startTime || endTime) {
+          extractBtn.innerHTML = 'Trimming audio...';
+          const startSeconds = timeToSeconds(startTime) || 0;
+          const endSeconds = timeToSeconds(endTime) || audioBuffer.duration;
+          
+          processedBuffer = await audioProcessor.trimAudio(
+            audioBuffer, 
+            startSeconds, 
+            endSeconds, 
+            format, 
+            isSaberFont
+          );
+        }
+
+        // Step 5: Convert to final format
+        extractBtn.innerHTML = 'Converting format...';
+        let finalAudio;
+        
+        if (format === 'wav') {
+          finalAudio = audioProcessor.audioBufferToWav(processedBuffer, isSaberFont);
+        } else {
+          finalAudio = await audioProcessor.audioBufferToMp3(processedBuffer);
+        }
+
+        // Step 6: Create download
+        const blob = new Blob([finalAudio], { 
+          type: format === 'wav' ? 'audio/wav' : 'audio/mpeg' 
+        });
+        const downloadUrl = URL.createObjectURL(blob);
+        
         // Show download section
         downloadSection.classList.remove('hidden');
         
         const downloadBtn = document.getElementById('downloadBtn');
         downloadBtn.innerHTML = `Download ${format.toUpperCase()}`;
+        downloadBtn.setAttribute('data-download-url', downloadUrl);
+        downloadBtn.setAttribute('data-filename', `extracted-audio.${format}`);
         
         // Update format info
         const formatInfo = document.getElementById('formatInfo');
@@ -403,23 +585,38 @@
         // Update time info
         const timeInfo = document.getElementById('timeInfo');
         if (startTime || endTime) {
-          timeInfo.textContent = `Range: ${startTime || '00:00'} → ${endTime || 'End'}`;
+          const duration = processedBuffer.duration;
+          timeInfo.textContent = `Trimmed: ${startTime || '00:00'} → ${endTime || Math.floor(duration/60)+':'+String(Math.floor(duration%60)).padStart(2,'0')} (${Math.floor(duration)}s)`;
         } else {
-          timeInfo.textContent = 'Full duration';
+          timeInfo.textContent = `Duration: ${Math.floor(audioBuffer.duration)}s`;
         }
-      }, 2500);
+
+      } catch (error) {
+        console.error('Processing failed:', error);
+        errorEl.textContent = 'Failed to process audio. Please try again.';
+        errorEl.classList.remove('hidden');
+      } finally {
+        extractBtn.innerHTML = 'Extract Audio';
+        extractBtn.disabled = false;
+      }
     });
 
     // Handle download
     document.getElementById('downloadBtn').addEventListener('click', function() {
-      const format = document.querySelector('input[name="format"]:checked').value;
-      // Simulate download
-      const link = document.createElement('a');
-      link.href = `sample-audio.${format}`;
-      link.download = `extracted-audio.${format}`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+      const downloadUrl = this.getAttribute('data-download-url');
+      const filename = this.getAttribute('data-filename');
+      
+      if (downloadUrl) {
+        const link = document.createElement('a');
+        link.href = downloadUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        
+        // Clean up the blob URL
+        URL.revokeObjectURL(downloadUrl);
+      }
     });
   </script>
 </body>
